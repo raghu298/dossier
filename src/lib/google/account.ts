@@ -131,6 +131,9 @@ export async function googleFetch<T = unknown>(
     tokens.delete(ACCOUNT_ID);
     throw new GoogleError("revoked", "Google no longer accepts Dossier's access. Connect your Google account again.", `${path}: 401`);
   }
+  if (response.status === 403 && /rateLimitExceeded|userRateLimitExceeded|Quota exceeded/.test(await response.clone().text().catch(() => ""))) {
+    throw new GoogleError("quota", "Google asks Dossier to slow down. Try again in a few minutes.", `${path}: 403 rate limit`);
+  }
   if (response.status === 403) throw new GoogleError("scope", "Google refused that. Check the permissions in Settings → Google.", `${path}: 403`);
   if (response.status === 429) throw new GoogleError("quota", "Google asks Dossier to slow down. Try again in a few minutes.", `${path}: 429`);
   if (response.status === 404 || response.status === 410) {

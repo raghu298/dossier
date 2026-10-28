@@ -85,6 +85,21 @@ export async function syncInbox({ signal }: { signal?: AbortSignal } = {}): Prom
   }
 }
 
+const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// A new Google project gets a small per-minute quota: space the reads out and wait when Google asks to slow down.
+async function getPaced(id: string, signal?: AbortSignal) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await pause(300);
+      return await getMessage(id, signal);
+    } catch (error) {
+      if (!(error instanceof GoogleError) || error.problem !== "quota" || attempt >= 5) throw error;
+      await pause(60_000);
+    }
+  }
+}
+
 async function runSync(historyId: string | null, ownAddress: string, scope: "known" | "all", signal?: AbortSignal) {
   let ids: string[];
   let next: string;
@@ -108,7 +123,7 @@ async function runSync(historyId: string | null, ownAddress: string, scope: "kno
   // Oldest first, so a thread's first mail links it for the ones after.
   const mails: ReadMail[] = [];
   for (const id of fresh) {
-    const mail = await getMessage(id, signal);
+    const mail = await getPaced(id, signal);
     if (mail) mails.push(mail);
   }
   mails.sort((a, b) => a.date.getTime() - b.date.getTime());

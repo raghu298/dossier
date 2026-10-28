@@ -37,6 +37,22 @@ export type SentApplication = { threadId: string; eventId: string | null; attach
  * tailored resume and cover letter attached, keeps the thread to watch for
  * replies, and moves a draft to Sent.
  */
+/**
+ * Your own resume file instead of the tailored PDFs, when DOSSIER_RESUME_PDF is
+ * set; DOSSIER_RESUME_JAVA_PDF is used for postings that are about Java.
+ */
+async function ownResume(role: string, posting: string): Promise<Attachment | null> {
+  const general = process.env.DOSSIER_RESUME_PDF;
+  if (!general) return null;
+  const java = process.env.DOSSIER_RESUME_JAVA_PDF;
+  const javaCount = (posting.match(/\bjava\b/gi) ?? []).length;
+  const isJava = /\bjava\b/i.test(role) || javaCount >= 3 || (javaCount > 0 && /spring/i.test(posting));
+  const file = isJava && java ? java : general;
+  const { readFile } = await import("node:fs/promises");
+  const { basename } = await import("node:path");
+  return { fileName: basename(file), contentType: "application/pdf", data: new Uint8Array(await readFile(file)) };
+}
+
 export async function sendApplicationEmail(applicationId: string): Promise<SentApplication> {
   const account = await loadGoogleAccount();
   if (!account) throw new GoogleError("not-connected", "Connect your Google account in Settings → Google first.");
@@ -51,7 +67,9 @@ export async function sendApplicationEmail(applicationId: string): Promise<SentA
 
   const [name, settings] = await Promise.all([loadProfileName(), loadSettings()]);
   const attachments: Attachment[] = [];
-  for (const { kind, path } of PRINTED) {
+  const own = await ownResume(application.role, application.postingText);
+  if (own) attachments.push(own);
+  for (const { kind, path } of own ? [] : PRINTED) {
     if (!application.documents.some((document) => document.kind === kind)) continue;
     attachments.push({
       fileName: resolveFileName(settings.fileNamePattern, { name, company: application.company, role: application.role, doc: kind, date: new Date() }),
@@ -61,7 +79,8 @@ export async function sendApplicationEmail(applicationId: string): Promise<SentA
   }
 
   const from = await sender(account.email);
-  const sent = await sendMail({ from, to, subject, body, attachments });
+  const text = own ? body.replace(/resume and cover letter (are|is) attached/i, "resume is attached") : body;
+  const sent = await sendMail({ from, to, subject, body: text, attachments });
   await prisma.$transaction([
     prisma.application.update({ where: { id: applicationId }, data: { emailThreadId: sent.threadId } }),
     prisma.emailMessage.upsert({
