@@ -22,6 +22,8 @@ const RIGHT_TITLE = /gen ?ai|llm|agentic|\bai\b|machine learning|ml\b|rag/i;
 const MIN_FIT = 0.6;
 
 const DRY = process.env.DRY === "1";
+// The only Google account applications may go from, and where the summary goes.
+const OWNER = "mahakudraghunath298@gmail.com";
 const MAX_SENDS = 3;
 const MIN_SCORE = 70;
 const ADDRESS = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
@@ -119,6 +121,10 @@ function fit(match: unknown): number | null {
   return items.reduce((sum, item) => sum + (item.result === "covered" ? 1 : item.result === "partial" ? 0.5 : 0), 0) / items.length;
 }
 
+const connected = (await loadGoogleAccount())?.email?.toLowerCase() ?? null;
+const rightAccount = connected === OWNER;
+if (connected && !rightAccount) say(`WRONG GOOGLE ACCOUNT: Dossier is connected to ${connected}, not ${OWNER}. Nothing was sent. Reconnect in Dossier → Settings → Google and pick ${OWNER}.`);
+
 const sentTo = new Set(
   (await prisma.emailMessage.findMany({ where: { direction: "OUTGOING" }, select: { toAddress: true } }))
     .flatMap((mail) => mail.toAddress.toLowerCase().match(ADDRESS) ?? []),
@@ -145,6 +151,7 @@ for (const application of drafts) {
   const share = fit(application.match);
   if (share !== null && share < MIN_FIT) { say(`Skipped ${label}: covers only ${Math.round(share * 100)}% of the requirements.`); continue; }
   if (sentTo.has(address) || appliedCompanies.has(application.company.toLowerCase())) { say(`Skipped ${label}: already applied there.`); continue; }
+  if (!rightAccount) { portal.push(`${label} (would be emailed to ${address} once the right Google account is connected)`); continue; }
   if (sent.length >= MAX_SENDS) { say(`Left for tomorrow: ${label} (daily limit of ${MAX_SENDS}).`); continue; }
 
   if (DRY) { say(`Would send: ${label} → ${address}`); sent.push(`${label} → ${address} (dry run)`); continue; }
@@ -184,14 +191,14 @@ if (account && !DRY) try {
     "",
     "Open Dossier: http://localhost:3000/applications",
   ].join("\n");
-  await sendMail({ from: account.email, to: account.email, subject: `Dossier: ${sent.length} applied by email, ${portal.length} waiting for you (${today})`, body, attachments: [] });
+  await sendMail({ from: account.email, to: OWNER, subject: `Dossier: ${sent.length} applied by email, ${portal.length} waiting for you (${today})`, body, attachments: [] });
 } catch (error) {
   console.log(`Could not email the summary: ${String(error)}`);
 }
 {
   // A Mac notification too, so a run is never missed even if Gmail fails.
   const { execFileSync } = await import("node:child_process");
-  const text = `${sent.length} applied by email, ${portal.length} waiting for you on websites. Check Gmail or Dossier.`;
+  const text = !rightAccount ? `Wrong Google account connected (${connected ?? "none"}). Reconnect with ${OWNER}.` : `${sent.length} applied by email, ${portal.length} waiting for you on websites. Check Gmail or Dossier.`;
   if (!DRY) try { execFileSync("osascript", ["-e", `display notification "${text}" with title "Dossier daily run" sound name "Glass"`]); } catch {}
 }
 await prisma.$disconnect?.();
