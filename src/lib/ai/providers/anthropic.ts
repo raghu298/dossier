@@ -4,7 +4,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 
 import { AiError } from "../errors";
-import { BaseProvider, type ChatAnswer, type ChatCall, type Effort, withJsonSchema } from "../provider";
+import { BaseProvider, withJsonSchema, type ChatAnswer, type ChatCall, type Effort } from "../provider";
 import { keyGuardedFetch } from "./guarded-fetch";
 
 /** Offered when the model list can't be fetched, e.g. before a key is saved. */
@@ -21,20 +21,15 @@ const THINKING_TOKENS = 12_000;
 // models, such as Claude Haiku 4.5, refuse the parameter.
 const effortLevels = new Map<string, ReadonlySet<Effort>>();
 
-/**
- * Anthropic compiles a structured-output schema into a grammar and refuses
- * one it finds too large (a 400), as with the extracted profile's. Such a
- * schema then goes in the system prompt instead, and BaseProvider checks the
- * answer against it as it does for providers without structured output.
- */
-const TOO_LARGE_SCHEMA = /grammar is too large|schema is too (large|complex)/i;
-
-/** Schemas Anthropic refused as too large, by name: sent in the prompt from then on. */
-const schemasInPrompt = new Set<string>();
-
-function refusedAsTooLarge(error: unknown): boolean {
-  return error instanceof Anthropic.BadRequestError && TOO_LARGE_SCHEMA.test(error.message);
-}
+// Schemas the API refused for structured output, by server, model and schema
+// name: it caps how complex one may be (union-typed and optional parameters,
+// grammar size), so large ones, such as a whole profile, go in the prompt
+// instead (#230).
+const promptSchemas = new Set<string>();
+// The refusals seen ("The compiled grammar is too large", "too many parameters
+// with union types") and documented ("Schema is too complex for compilation"),
+// and the documented limit on optional parameters, whose wording we haven't seen.
+const SCHEMA_REFUSED = /grammar is too large|parameters with union types|optional parameters|schema is too complex/i;
 
 /** Claude through the Messages API with the user's own key. */
 export class AnthropicProvider extends BaseProvider {
@@ -48,7 +43,13 @@ export class AnthropicProvider extends BaseProvider {
     timeoutMs: number,
   ) {
     super(model, timeoutMs);
-    this.client = apiKey ? new Anthropic({ apiKey, baseURL, timeout: timeoutMs, maxRetries: 1, fetch: keyGuardedFetch() }) : null;
+    // The SDK sends the key as a bearer token since 1.0. The Claude API takes
+    // either header, but a gateway at a base URL of the user's own may only
+    // read X-Api-Key, as every request before did.
+    const keyHeader = { "X-Api-Key": apiKey, Authorization: null };
+    this.client = apiKey
+      ? new Anthropic({ apiKey, baseURL, timeout: timeoutMs, maxRetries: 1, fetch: keyGuardedFetch(), defaultHeaders: keyHeader })
+      : null;
   }
 
   /** Current Claude models reject `temperature`; creativity is in the prompt's wording instead. */
@@ -59,29 +60,31 @@ export class AnthropicProvider extends BaseProvider {
   protected async chat(call: ChatCall): Promise<ChatAnswer> {
     if (!this.client) throw AiError.config("Add your Anthropic API key in Settings → AI provider first.");
     const effort = call.effort && (await this.effortLevels(this.client, call.model, call.signal)).has(call.effort) ? call.effort : undefined;
-    const create = (inPrompt: boolean) => {
-      const format = call.json && !inPrompt ? { format: zodOutputFormat(call.json.schema) } : {};
-      const outputConfig = { ...format, ...(effort ? { effort } : {}) };
-      return this.client!.messages.create(
-        {
-          model: call.model,
-          max_tokens: call.maxTokens + THINKING_TOKENS,
-          system: call.json && inPrompt ? withJsonSchema(call.system, call.json.schema) : call.system,
-          messages: call.messages,
-          ...(Object.keys(outputConfig).length > 0 ? { output_config: outputConfig } : {}),
-        },
-        { signal: call.signal },
-      );
-    };
-    const inPrompt = call.json ? schemasInPrompt.has(call.json.name) : false;
-    let message: Anthropic.Message;
+    const schemaKey = call.json ? `${this.baseURL} ${call.model} ${call.json.name}` : "";
+    if (!call.json || promptSchemas.has(schemaKey)) return this.send(this.client, call, effort, false);
     try {
-      message = await create(inPrompt);
+      return await this.send(this.client, call, effort, true);
     } catch (error) {
-      if (!call.json || inPrompt || !refusedAsTooLarge(error)) throw error;
-      schemasInPrompt.add(call.json.name);
-      message = await create(true);
+      if (!(error instanceof Anthropic.BadRequestError && SCHEMA_REFUSED.test(error.message))) throw error;
+      promptSchemas.add(schemaKey);
+      return this.send(this.client, call, effort, false);
     }
+  }
+
+  /** One request; `structured` asks for `call.json` through output_config, otherwise the schema goes in the prompt. */
+  private async send(client: Anthropic, call: ChatCall, effort: Effort | undefined, structured: boolean): Promise<ChatAnswer> {
+    const format = call.json && structured ? { format: zodOutputFormat(call.json.schema) } : {};
+    const outputConfig = { ...format, ...(effort ? { effort } : {}) };
+    const message = await client.messages.create(
+      {
+        model: call.model,
+        max_tokens: call.maxTokens + THINKING_TOKENS,
+        system: call.json && !structured ? withJsonSchema(call.system, call.json.schema) : call.system,
+        messages: call.messages,
+        ...(Object.keys(outputConfig).length > 0 ? { output_config: outputConfig } : {}),
+      },
+      { signal: call.signal },
+    );
     if (message.stop_reason === "refusal") {
       throw new AiError("provider", "The model declined to answer this one. Try rewording it, or try again.", "refusal");
     }
