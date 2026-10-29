@@ -13,9 +13,22 @@ const { writeEmailJob } = await import(`${D}/jobs/write-email.ts`);
 const { startJob, getJob } = await import(`${D}/jobs/runner.ts`);
 const { connectorDraftJob } = await import(`${D}/connector/draft.ts`);
 
-// Own searches on top of Dossier's job agent: Python + GenAI and Java + GenAI.
-const SEARCHES = ["Python GenAI Engineer in Bengaluru", "Java GenAI Engineer in Bengaluru", "Agentic AI Engineer in Bengaluru", "Java LLM Engineer in India"];
-const MAX_NEW_DRAFTS = 6;
+// Own searches on top of Dossier's job agent: Python + GenAI and Java + GenAI, Bangalore or remote from India.
+const ALL_SEARCHES = [
+  "Python GenAI Engineer in Bengaluru", "Java GenAI Engineer in Bengaluru", "Agentic AI Engineer in Bengaluru",
+  "AI Engineer LLM in Bengaluru", "Remote Senior GenAI Engineer India", "Senior Generative AI Engineer in Bengaluru",
+  "Lead AI Engineer in Bengaluru", "LLM Engineer in Bengaluru", "Remote Agentic AI Engineer India",
+  "AI/ML Engineer GenAI in Bengaluru", "Java Spring Boot AI Engineer in Bengaluru", "AI Architect Generative AI in Bengaluru",
+  "Remote LLM Engineer India", "RAG LangChain Engineer in Bengaluru", "Machine Learning Engineer LLM in Bengaluru",
+  "Remote Java Backend Engineer AI India",
+];
+// Searches per day: the free JSearch plan (~200/month) fits 4; raise DOSSIER_JSEARCH_PER_DAY in .env after upgrading.
+const PER_DAY = Math.min(ALL_SEARCHES.length, Number(process.env.DOSSIER_JSEARCH_PER_DAY ?? 4));
+const PAGES = String(Number(process.env.DOSSIER_JSEARCH_PAGES ?? 1));
+// Rotate through the list so every phrase is searched within a few days.
+const dayIndex = Math.floor(Date.now() / 86_400_000);
+const SEARCHES = Array.from({ length: PER_DAY }, (_, i) => ALL_SEARCHES[(dayIndex * PER_DAY + i) % ALL_SEARCHES.length]);
+const MAX_NEW_DRAFTS = Number(process.env.DOSSIER_MAX_NEW_DRAFTS ?? 15);
 // Titles that aren't the target: senior/lead GenAI engineering.
 const WRONG_TITLE = /\b(qa|test(er|ing)?|devops|intern|trainee|junior|fresher|full[- ]?stack|front[- ]?end|data analyst|sales|recruit|support|walk-?in|part[- ]time|freelance|trainers?|faculty|instructor|teacher|mentor|tutor)\b/i;
 const RIGHT_TITLE = /gen ?ai|llm|agentic|\bai\b|machine learning|ml\b|rag/i;
@@ -24,7 +37,7 @@ const MIN_FIT = 0.6;
 const DRY = process.env.DRY === "1";
 // The only Google account applications may go from, and where the summary goes.
 const OWNER = "mahakudraghunath298@gmail.com";
-const MAX_SENDS = 5;
+const MAX_SENDS = Number(process.env.DOSSIER_MAX_SENDS ?? 8);
 const MIN_SCORE = 70;
 const ADDRESS = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
 // Addresses that are not for applying: accommodation, privacy, no-reply and similar.
@@ -69,18 +82,18 @@ if (!DRY) try {
 }
 
 // Fetch: new postings from JSearch, drafted with Dossier's writer.
-const known = new Set((await prisma.application.findMany({ select: { company: true, role: true } })).map((a) => `${a.company}|${a.role}`.toLowerCase()));
-const knownCompanies = new Set((await prisma.application.findMany({ select: { company: true } })).map((a) => a.company.toLowerCase()));
+const known = new Set((await prisma.application.findMany({ select: { company: true, role: true } })).map((a: { company: string; role: string }) => `${a.company}|${a.role}`.toLowerCase()));
+const knownCompanies = new Set((await prisma.application.findMany({ select: { company: true } })).map((a: { company: string }) => a.company.toLowerCase()));
 let drafted = 0;
 const sentAddresses = new Set(
   (await prisma.emailMessage.findMany({ where: { direction: "OUTGOING" }, select: { toAddress: true } }))
-    .flatMap((mail) => mail.toAddress.toLowerCase().match(ADDRESS) ?? []),
+    .flatMap((mail: { toAddress: string }) => mail.toAddress.toLowerCase().match(ADDRESS) ?? []),
 );
 if (!DRY && process.env.DOSSIER_JSEARCH_KEY) {
   for (const query of SEARCHES) {
     if (drafted >= MAX_NEW_DRAFTS) break;
     const url = new URL("https://api.openwebninja.com/jsearch/search");
-    url.search = new URLSearchParams({ query, country: "in", date_posted: "week", num_pages: "1" }).toString();
+    url.search = new URLSearchParams({ query, country: "in", date_posted: "week", num_pages: PAGES }).toString();
     let jobs: any[] = [];
     try {
       const answer: any = await (await fetch(url, { headers: { "x-api-key": process.env.DOSSIER_JSEARCH_KEY } })).json();
@@ -176,10 +189,10 @@ if (connected && !rightAccount) say(`WRONG GOOGLE ACCOUNT: Dossier is connected 
 
 const sentTo = new Set(
   (await prisma.emailMessage.findMany({ where: { direction: "OUTGOING" }, select: { toAddress: true } }))
-    .flatMap((mail) => mail.toAddress.toLowerCase().match(ADDRESS) ?? []),
+    .flatMap((mail: { toAddress: string }) => mail.toAddress.toLowerCase().match(ADDRESS) ?? []),
 );
 const appliedCompanies = new Set(
-  (await prisma.application.findMany({ where: { status: { not: "DRAFT" } }, select: { company: true } })).map((a) => a.company.toLowerCase()),
+  (await prisma.application.findMany({ where: { status: { not: "DRAFT" } }, select: { company: true } })).map((a: { company: string }) => a.company.toLowerCase()),
 );
 const drafts = await prisma.application.findMany({ where: { status: "DRAFT" }, orderBy: { createdAt: "desc" } });
 
@@ -231,6 +244,8 @@ if (account && !DRY) try {
     "",
     `Applied by email today (${sent.length}):`,
     ...(sent.length ? sent.map((line) => ` - ${line}`) : [" - none"]),
+    "",
+    "Portal jobs (Naukri / LinkedIn / Instahyre): open Terminal, run `claude --chrome`, type /apply-today.",
     "",
     `Waiting for you to apply on the portal (${portal.length}):`,
     ...(portal.length ? portal.map((line) => ` - ${line}`) : [" - none"]),
