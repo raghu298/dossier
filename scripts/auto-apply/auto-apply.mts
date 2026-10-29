@@ -24,7 +24,7 @@ const MIN_FIT = 0.6;
 const DRY = process.env.DRY === "1";
 // The only Google account applications may go from, and where the summary goes.
 const OWNER = "mahakudraghunath298@gmail.com";
-const MAX_SENDS = 3;
+const MAX_SENDS = 5;
 const MIN_SCORE = 70;
 const ADDRESS = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
 // Addresses that are not for applying: accommodation, privacy, no-reply and similar.
@@ -72,6 +72,10 @@ if (!DRY) try {
 const known = new Set((await prisma.application.findMany({ select: { company: true, role: true } })).map((a) => `${a.company}|${a.role}`.toLowerCase()));
 const knownCompanies = new Set((await prisma.application.findMany({ select: { company: true } })).map((a) => a.company.toLowerCase()));
 let drafted = 0;
+const sentAddresses = new Set(
+  (await prisma.emailMessage.findMany({ where: { direction: "OUTGOING" }, select: { toAddress: true } }))
+    .flatMap((mail) => mail.toAddress.toLowerCase().match(ADDRESS) ?? []),
+);
 if (!DRY && process.env.DOSSIER_JSEARCH_KEY) {
   for (const query of SEARCHES) {
     if (drafted >= MAX_NEW_DRAFTS) break;
@@ -103,6 +107,51 @@ if (!DRY && process.env.DOSSIER_JSEARCH_KEY) {
         if (state?.status === "DONE") { drafted++; say(`New draft: ${company} – ${title}`); break; }
         if (state?.status === "FAILED") { say(`Could not draft ${company} – ${title}: ${state.error ?? ""}`); break; }
       }
+    }
+  }
+}
+
+// Second source: freehire.me (Naukri, Hirist and more), free and no key. Only postings that
+// give an email to apply to are drafted, since the rest need a browser.
+const FREEHIRE_QUERIES = ["genai", "generative ai", "llm", "agentic", "java ai"];
+const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
+/** Too junior, or not a permanent job. */
+function wrongKind(text: string): boolean {
+  if (/part[- ]time|short[- ]term|freelance|internship|contract (role|position|basis)/i.test(text.slice(0, 1500))) return true;
+  const ranges = [...text.matchAll(/(\d{1,2})\s*(?:-|to|–)\s*(\d{1,2})\s*(?:\+\s*)?(?:years|yrs)/gi)].map((m) => Number(m[2]));
+  return ranges.length > 0 && Math.max(...ranges) < 6;
+}
+if (!DRY) {
+  let fhDrafted = 0;
+  const slugs = new Set<string>();
+  for (const q of FREEHIRE_QUERIES) {
+    try {
+      const answer: any = await (await fetch(`https://freehire.me/api/v1/jobs/search?q=${encodeURIComponent(q)}&countries=in&posted_within_days=3&limit=50`)).json();
+      for (const job of answer.data ?? []) {
+        if (WRONG_TITLE.test(job.title ?? "") || !/bangal|bengal|remote|india/i.test(String(job.location ?? "india"))) continue;
+        slugs.add(job.public_slug);
+      }
+    } catch (error) { say(`freehire search "${q}" failed: ${String(error)}`); }
+  }
+  for (const slug of slugs) {
+    if (fhDrafted >= MAX_NEW_DRAFTS) break;
+    let job: any;
+    try { job = (await (await fetch(`https://freehire.me/api/v1/jobs/${slug}`)).json()).data; } catch { continue; }
+    if (!job || job.closed_at) continue;
+    const text = String(job.description ?? "").replace(/<[^>]+>/g, " ");
+    const address = applyAddress(text);
+    if (!address || wrongKind(text)) continue;
+    const company = String(job.company ?? "");
+    if (sentAddresses.has(address) || knownCompanies.has(company.toLowerCase())) continue;
+    if (!/gen ?ai|llm|agentic|\brag\b|langchain|langgraph/i.test(text)) continue;
+    const posting = `${job.title}\n${company} — ${job.location ?? "India"}\n\n${text}`;
+    const id = await startJob(connectorDraftJob, { posting, postingUrl: job.url ?? "", note: "", postingId: null });
+    knownCompanies.add(company.toLowerCase());
+    for (let i = 0; i < 200; i++) {
+      await pause(3000);
+      const state = await getJob(id);
+      if (state?.status === "DONE") { fhDrafted++; drafted++; say(`New draft (email): ${company} – ${job.title}`); break; }
+      if (state?.status === "FAILED") { say(`Could not draft ${company} – ${job.title}: ${state.error ?? ""}`); break; }
     }
   }
 }
