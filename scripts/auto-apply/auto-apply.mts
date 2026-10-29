@@ -1,4 +1,4 @@
-// Daily auto-apply for Dossier: runs after the 8:00 job agent.
+// Daily auto-apply for Dossier: starts at 8:00 with the job agent and waits for its run to finish.
 // 1. Inbox check (recruiter replies get linked to applications).
 // 2. For drafts whose posting asks for applications by email, writes the email
 //    and sends it with Raghunath's own resume (Java + GenAI one for Java roles).
@@ -72,6 +72,19 @@ async function writeEmail(applicationId: string) {
     if (job?.status === "FAILED") { say(`  could not write the email: ${job.error ?? "unknown"}`); return false; }
   }
   return false;
+}
+
+// Both start at 8:00: wait (up to 45 min) for today's job agent run, so its new drafts are checked too.
+if (!DRY) {
+  const midnight = new Date(); midnight.setHours(0, 0, 0, 0);
+  const deadline = Date.now() + 45 * 60_000;
+  for (;;) {
+    const scan = await prisma.job.findFirst({ where: { type: "agent-scan", createdAt: { gte: midnight } }, orderBy: { createdAt: "desc" } });
+    const busy = await prisma.job.count({ where: { type: { startsWith: "agent-" }, status: { in: ["QUEUED", "RUNNING"] } } });
+    if (scan && busy === 0) { say(`Job agent finished today's run (${scan.status}).`); break; }
+    if (Date.now() > deadline) { say(scan ? "Job agent still drafting after 45 min; going on without its last drafts." : "Job agent hasn't run today (is Dossier running?); going on."); break; }
+    await new Promise((r) => setTimeout(r, 60_000));
+  }
 }
 
 if (!DRY) try {
