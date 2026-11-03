@@ -7,7 +7,7 @@ const D = "/Users/raghunath/dossier/src/lib";
 const { prisma } = await import(`${D}/prisma.ts`);
 const { syncInbox } = await import(`${D}/google/sync.ts`);
 const { sendApplicationEmail } = await import(`${D}/google/send.ts`);
-const { sendMail } = await import(`${D}/google/gmail.ts`);
+const { sendMail, searchMessages, getMessage } = await import(`${D}/google/gmail.ts`);
 const { loadGoogleAccount } = await import(`${D}/google/account.ts`);
 const { writeEmailJob } = await import(`${D}/jobs/write-email.ts`);
 const { startJob, getJob } = await import(`${D}/jobs/runner.ts`);
@@ -246,6 +246,40 @@ for (const application of drafts) {
   }
 }
 
+// The nightly GyaanStack job email (label gyaanstack-jobs): keep Bangalore / remote roles not yet applied to,
+// save them for /apply-today and list them in the summary. Nothing is applied to here.
+const gyaan: string[] = [];
+const GYAAN_FILE = "/Users/raghunath/dossier-data/gyaanstack-today.json";
+const NOT_FOR_ME = /\b(freelance|part[- ]?time|consultant\/freelance|contract|immediate joiners?|intern|trainee)\b/i;
+const NEEDS_LOGIN = /myworkdayjobs\.com|oraclecloud\.com|myworkdaysite\.com|taleo\.net/i;
+const AGGREGATOR = /shine\.com|hirist\.tech|jooble|kitjob|jobrapido|hiring\.cafe/i;
+try {
+  const [id] = rightAccount ? await searchMessages("from:hello@gyaanstack.com subject:Jobs newer_than:2d", { max: 1 }) : [];
+  const mail = id ? await getMessage(id) : null;
+  const jobs: { company: string; title: string; location: string; url: string; backup: string | null; kind: string }[] = [];
+  for (const block of mail?.text.split(/\n(?=\[\s*\d+\])/) ?? []) {
+    const head = block.match(/^\[\s*\d+\]\s+\d+\s+(.+?)\s+—\s+(.+)$/m);
+    const url = block.match(/^\s*apply:\s*(\S+)/m)?.[1];
+    if (!head || !url) continue;
+    const [, title, company] = head;
+    const location = block.split("\n")[1]?.split(" · ")[0].trim() ?? "";
+    const label = `${company} – ${title}`;
+    const years = Number(block.match(/note: Only (\d+)\+ yrs asked/)?.[1] ?? 99);
+    if (!/bangalore|bengaluru|remote/i.test(location)) continue;
+    if (NOT_FOR_ME.test(title) || WRONG_TITLE.test(title) || years < 5) { say(`GyaanStack email, skipped: ${label} (contract / junior / not the target role).`); continue; }
+    const key = company.toLowerCase().replace(/\b(private|pvt|limited|ltd|inc|llc|solutions|technologies|services)\b|[^a-z0-9 ]/g, "").trim();
+    if ([...appliedCompanies].some((done) => done.includes(key) || key.includes(done))) { say(`GyaanStack email, already applied there: ${label}.`); continue; }
+    const kind = NEEDS_LOGIN.test(url) ? "needs your careers-site login" : AGGREGATOR.test(url) ? "aggregator: find the real posting" : /naukri\.com/.test(url) ? "Naukri" : /instahyre\.com/.test(url) ? "Instahyre" : "company careers page";
+    jobs.push({ company, title, location, url, backup: block.match(/if Naukri says expired:\s*(\S+)/)?.[1] ?? null, kind });
+    gyaan.push(`${label} [${kind}]\n   ${location}\n   Apply: ${url}`);
+  }
+  const { writeFileSync } = await import("node:fs");
+  writeFileSync(GYAAN_FILE, JSON.stringify({ date: new Date().toISOString().slice(0, 10), subject: mail?.subject ?? null, jobs }, null, 2));
+  say(mail ? `GyaanStack email: ${jobs.length} Bangalore/remote jobs saved for /apply-today.` : "GyaanStack email: none in the last 2 days.");
+} catch (error) {
+  say(`Could not read the GyaanStack email: ${String(error)}`);
+}
+
 say(`New drafts today: ${drafted}.`);
 say(`Drafts checked: ${drafts.length}; sent by email: ${sent.length}; portal only: ${portal.length}.`);
 const account = await loadGoogleAccount();
@@ -262,6 +296,9 @@ if (account && !DRY) try {
     "",
     `Waiting for you to apply on the portal (${portal.length}):`,
     ...(portal.length ? portal.map((line) => ` - ${line}`) : [" - none"]),
+    "",
+    `From last night's GyaanStack email, not applied yet (${gyaan.length}) — /apply-today picks these up:`,
+    ...(gyaan.length ? gyaan.map((line) => ` - ${line}`) : [" - none"]),
     "",
     "Notes:",
     ...log.map((line) => ` - ${line}`),
