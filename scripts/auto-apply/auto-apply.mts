@@ -254,8 +254,20 @@ const NOT_FOR_ME = /\b(freelance|part[- ]?time|consultant\/freelance|contract|im
 const NEEDS_LOGIN = /myworkdayjobs\.com|oraclecloud\.com|myworkdaysite\.com|taleo\.net/i;
 const AGGREGATOR = /shine\.com|hirist\.tech|jooble|kitjob|jobrapido|hiring\.cafe/i;
 try {
-  const [id] = rightAccount ? await searchMessages("from:hello@gyaanstack.com subject:Jobs newer_than:2d", { max: 1 }) : [];
-  const mail = id ? await getMessage(id) : null;
+  // Only this morning's email (it lands 06:00–08:40 IST); an older one was already handled the day before.
+  const today = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+  const [id] = rightAccount ? await searchMessages("from:hello@gyaanstack.com subject:Jobs newer_than:1d", { max: 1 }) : [];
+  const found = id ? await getMessage(id) : null;
+  const mail = found && found.date.toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" }) === today ? found : null;
+  const word = (name: string) => name.toLowerCase().replace(/\b(private|pvt|limited|ltd|inc|llc|group|india|international|global|solutions|technologies|services|software)\b|[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
+  const applied = [...appliedCompanies].map((name) => word(String(name))).filter((name) => name.length >= 3);
+  const appliedBefore = (company: string) => {
+    const key = word(company);
+    if (key.length < 3) return false;
+    const has = (text: string, part: string) => new RegExp(`(^| )${part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}( |$)`).test(text);
+    const joined = key.replace(/ /g, "");
+    return applied.some((done) => has(key, done) || has(done, key) || done.replace(/ /g, "") === joined);
+  };
   const jobs: { company: string; title: string; location: string; url: string; backup: string | null; kind: string }[] = [];
   for (const block of mail?.text.split(/\n(?=\[\s*\d+\])/) ?? []) {
     const head = block.match(/^\[\s*\d+\]\s+\d+\s+(.+?)\s+—\s+(.+)$/m);
@@ -267,15 +279,15 @@ try {
     const years = Number(block.match(/note: Only (\d+)\+ yrs asked/)?.[1] ?? 99);
     if (!/bangalore|bengaluru|remote/i.test(location)) continue;
     if (NOT_FOR_ME.test(title) || WRONG_TITLE.test(title) || years < 5) { say(`GyaanStack email, skipped: ${label} (contract / junior / not the target role).`); continue; }
-    const key = company.toLowerCase().replace(/\b(private|pvt|limited|ltd|inc|llc|solutions|technologies|services)\b|[^a-z0-9 ]/g, "").trim();
-    if ([...appliedCompanies].some((done) => done.includes(key) || key.includes(done))) { say(`GyaanStack email, already applied there: ${label}.`); continue; }
+    if (appliedBefore(company)) { say(`GyaanStack email, already applied there: ${label}.`); continue; }
     const kind = NEEDS_LOGIN.test(url) ? "needs your careers-site login" : AGGREGATOR.test(url) ? "aggregator: find the real posting" : /naukri\.com/.test(url) ? "Naukri" : /instahyre\.com/.test(url) ? "Instahyre" : "company careers page";
     jobs.push({ company, title, location, url, backup: block.match(/if Naukri says expired:\s*(\S+)/)?.[1] ?? null, kind });
     gyaan.push(`${label} [${kind}]\n   ${location}\n   Apply: ${url}`);
   }
   const { writeFileSync } = await import("node:fs");
-  writeFileSync(GYAAN_FILE, JSON.stringify({ date: new Date().toISOString().slice(0, 10), subject: mail?.subject ?? null, jobs }, null, 2));
-  say(mail ? `GyaanStack email: ${jobs.length} Bangalore/remote jobs saved for /apply-today.` : "GyaanStack email: none in the last 2 days.");
+  // mailDate null = this morning's email hadn't arrived yet; /apply-today then reads Gmail itself.
+  writeFileSync(GYAAN_FILE, JSON.stringify({ date: today, mailDate: mail ? today : null, subject: mail?.subject ?? null, jobs }, null, 2));
+  say(mail ? `GyaanStack email: ${jobs.length} Bangalore/remote jobs saved for /apply-today.` : "GyaanStack email: today's hasn't arrived yet; /apply-today will read it from Gmail.");
 } catch (error) {
   say(`Could not read the GyaanStack email: ${String(error)}`);
 }
