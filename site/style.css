@@ -420,8 +420,46 @@ h3 {
   text-align: center;
 }
 .hero__text h1 { max-width: 13ch; }
+@media (min-width: 1024px) {
+  /* Two lines: the name of the thing, then where it lives, kept whole. */
+  .hero__text h1 { max-width: 17ch; }
+  .hero__text h1 em { display: inline-block; }
+}
 .hero__text .lede { margin-top: 20px; max-width: 47rem; }
 .hero__text .actions { justify-content: center; margin-top: 24px; }
+
+/* Getting it, in the hero: the desktop app first, self-hosting beside it */
+.get {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  margin-top: 32px;
+}
+.get__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 12px;
+}
+.button--large {
+  height: 54px;
+  padding: 0 26px;
+  font-size: 16.5px;
+  border-radius: 12px;
+}
+.button--large .icon { width: 19px; height: 19px; }
+.get__note {
+  max-width: 34rem;
+  color: var(--muted);
+  font-size: 15px;
+  text-wrap: balance;
+}
+.get__note a { color: var(--ink); text-underline-offset: 3px; }
+@media (max-width: 519px) {
+  .get, .get__actions { align-self: stretch; }
+  .get__actions { flex-direction: column; }
+}
 .fineprint {
   color: var(--muted);
   font-size: 13.5px;
@@ -1302,6 +1340,9 @@ h3 {
 .copy.is-done { color: #9fd3b0; }
 
 .install__intro { max-width: 44rem; color: var(--muted); }
+.install__steps > .install__intro { margin-bottom: 28px; }
+.install__intro a { color: var(--ink); text-underline-offset: 3px; }
+.downloads { display: flex; flex-wrap: wrap; gap: 10px; }
 .install__server { display: grid; gap: 24px; }
 .install__more { color: var(--muted); font-size: 14.5px; }
 .install__more a { color: var(--ink); text-underline-offset: 3px; }
