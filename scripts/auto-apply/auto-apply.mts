@@ -254,11 +254,21 @@ const NOT_FOR_ME = /\b(freelance|part[- ]?time|consultant\/freelance|contract|im
 const NEEDS_LOGIN = /myworkdayjobs\.com|oraclecloud\.com|myworkdaysite\.com|taleo\.net/i;
 const AGGREGATOR = /shine\.com|hirist\.tech|jooble|kitjob|jobrapido|hiring\.cafe/i;
 try {
-  // Only this morning's email (it lands 06:00–08:40 IST); an older one was already handled the day before.
+  // Only this morning's email; an older one was already handled the day before. It usually lands 06:00–07:30 IST
+  // but some nights the server sends it after 9:00 (3 and 10 Nov), so keep checking every 5 min until 10:30 IST.
   const today = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
-  const [id] = rightAccount ? await searchMessages("from:hello@gyaanstack.com subject:Jobs newer_than:1d", { max: 1 }) : [];
-  const found = id ? await getMessage(id) : null;
-  const mail = found && found.date.toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" }) === today ? found : null;
+  const istHour = () => Number(new Date().toLocaleString("en-GB", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit", hour12: false }).replace(":", ".").slice(0, 5));
+  const todaysMail = async () => {
+    const [id] = rightAccount ? await searchMessages("from:hello@gyaanstack.com subject:Jobs newer_than:1d", { max: 1 }) : [];
+    const found = id ? await getMessage(id) : null;
+    return found && found.date.toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" }) === today ? found : null;
+  };
+  let mail = await todaysMail();
+  if (!mail && rightAccount && !DRY && istHour() < 10.3) say("GyaanStack email not here yet; checking every 5 min until 10:30 IST.");
+  while (!mail && rightAccount && !DRY && istHour() < 10.3) {
+    await new Promise((r) => setTimeout(r, 5 * 60_000));
+    mail = await todaysMail();
+  }
   const word = (name: string) => name.toLowerCase().replace(/\b(private|pvt|limited|ltd|inc|llc|group|india|international|global|solutions|technologies|services|software)\b|[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
   const applied = [...appliedCompanies].map((name) => word(String(name))).filter((name) => name.length >= 3);
   const appliedBefore = (company: string) => {
